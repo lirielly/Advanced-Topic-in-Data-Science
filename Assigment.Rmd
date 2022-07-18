@@ -1,0 +1,1766 @@
+---
+title: "2022 :: Advanced Topics in Data Science / Data Mining II :: Practical Assignment"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+
+## A classification system to detect questionable information
+
+It was given a dataset comprised of 18k tweets about the last U.S. Presidential election, which were retrieved before the election was held. The tweets are already labeled as TRUE or FALSE in the field questionable_domain. The ultimate goal of this project is to create a classification system for tweets in order to identify where a new (unseen) tweet is disseminating questionable information, or not. Therefore, in this project will follow the below steps:
+
+  + Perform an exploratory data analysis on the dataset
+  + Identify relevant features to use in the machine learning model. Note that many features will need to be computed from the available information in the dataset
+  + Use four machine learning algorithms to train the classifier
+  + Perform an evaluation of the model/classifiers
+  + Report the process in an article-type document
+  + Do a presentation of the work
+
+### Group information
+**Names:** Arina Sanches, Amanda Tavares, Lirielly Vitorugo and Marta Brandão
+
+```{r}
+# text analysis
+library(quanteda)
+library(readtext)
+library(textclean)
+library(tm)
+
+# data management
+library(stringr)
+library(dplyr)
+library(arules)
+library(urltools)
+
+# visualization
+library(ggplot2)
+library(ggthemes)
+library(ggrepel)                       
+library("scales")
+library(quanteda.textplots)
+library(quanteda.textstats)
+library(heatmaply)
+library(reshape2)
+library(arulesViz)
+library(forcats)
+
+# modeling
+library(caret)
+library(tidymodels)
+library(MLmetrics)
+library(syuzhet)
+library(ROSE)
+library(discrim)
+library(DMwR)
+library(xgboost)
+```
+
+
+```{r}
+# Reading the input file
+dft = read.csv("C:/Users/01549098/OneDrive/UP - Master in Data Science/Tópicos Avançados em Ciência de Dados/Trabalho TADS/FN-Dataset-18k_Urls.csv", encoding = "UTF-8", sep = ";")
+
+tweets = readtext("C:/Users/01549098/OneDrive/UP - Master in Data Science/Tópicos Avançados em Ciência de Dados/Trabalho TADS/FN-Dataset-18k.csv")
+dft$description[3]
+```
+
+```{r}
+dft$X = NULL
+str(dft)
+```
+
+
+Creating a news columns for Mentions, Hashtag and URLs
+```{r}
+dft$mentions = grepl('@\\S*', dft$description)
+#dft$urls = grepl('https\\S*', dft$description)
+dft$hashtag = grepl('#\\S*', dft$description)
+```
+
+
+```{r}
+domain = suffix_extract(domain(dft$url_new))
+dft$domain = domain$domain
+```
+
+
+Counting Hashtag, Mentions and URLs
+```{r}
+# Count the amount of hashtag, mentions and url that each tweet contains 
+getCount = function(data, k, k1, k2){
+  hashtag_count = str_count(data$description, k)
+  mention_count = str_count(data$description, k1)
+  url_count = str_count(data$url_new, k2)
+  
+  return(data.frame(data, hashtag_count, mention_count, url_count))
+}
+
+dft = getCount(dft, '#', '@', 'https://')
+```
+
+
+
+```{r}
+# primeiro fazemos a matriz de correlação
+cormat = round(cor(dft[c("user_friends_count", "user_followers_count", 
+               "user_favourites_count", "user_verified", "favorite_count",
+               "retweet_count")]),2)
+
+
+# Get lower triangle of the correlation matrix
+get_lower_tri=function(cormat){
+  cormat[upper.tri(cormat)] = NA
+  return(cormat)
+}
+# Get upper triangle of the correlation matrix
+get_upper_tri = function(cormat){
+  cormat[lower.tri(cormat)] = NA
+  return(cormat)
+}
+
+reorder_cormat = function(cormat){
+# Use correlation between variables as distance
+dd = as.dist((1-cormat)/2)
+hc = hclust(dd)
+cormat = cormat[hc$order, hc$order]
+}
+
+# Reorder the correlation matrix
+cormat = reorder_cormat(cormat)
+upper_tri = get_upper_tri(cormat)
+# Melt the correlation matrix
+melted_cormat = melt(upper_tri, na.rm = TRUE)
+# Create a ggheatmap
+ggheatmap = ggplot(melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") +
+  theme_minimal()+ # minimal theme
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1)) +
+ coord_fixed()
+
+
+ggheatmap + 
+geom_text(aes(Var2, Var1, label = value), color = "black", size = 4) +
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = c(0.6, 0.7),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+```
+
+
+Plotting the proportion of the variable **questionable domain**
+```{r}
+# Proportion graph with label in the axis
+ggplot(dft, aes(questionable_domain, fill = questionable_domain)) +
+  geom_bar(aes(y = (..count..)/sum(..count..)), position = "dodge") + 
+  geom_text(aes(y = (..count..)/sum(..count..), 
+                label = paste0(round(prop.table(..count..) * 100, 2), '%')), 
+                stat = 'count', 
+                position = position_stack(vjust = .9), 
+                size = 4,
+                colour = "white") + 
+  scale_y_continuous(labels = scales::percent) + 
+  ylab("Percentage") + xlab("Questionable Domain") +
+  theme(legend.position="none") + 
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+  
+```
+
+Plotting the boxplot for **user_friends_count** by **questionable_domain**
+```{r}
+ggplot(dft, aes( y=user_friends_count, fill=questionable_domain)) + 
+  geom_boxplot() +
+  ggtitle("Boxplot User Friends Count by Questionable Domain") +
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+Plotting the boxplot for **user_favourites_count** by **questionable_domain**
+```{r}
+ggplot(dft, aes( y=user_favourites_count, fill=questionable_domain)) + 
+  geom_boxplot() +
+  ggtitle("Boxplot User Favourites Count by Questionable Domain") +
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+
+Plotting the boxplot for **user_followers_count** by **questionable_domain**
+```{r}
+ggplot(dft, aes( y=user_followers_count, fill=questionable_domain)) + 
+  geom_boxplot() +
+  ggtitle("Boxplot User Followers Count by Questionable Domain") +
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+Plotting the boxplot for **favorite_count** by **questionable_domain**
+```{r}
+ggplot(dft, aes(y=favorite_count, fill=questionable_domain)) + 
+  geom_boxplot() +
+  ggtitle("Boxplot Favorite Count by Questionable Domain") + 
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+Plotting the boxplot for **retweet_count** by **questionable_domain**
+```{r}
+ggplot(dft, aes(y=retweet_count, fill=questionable_domain)) + 
+  geom_boxplot() +
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+
+Plotting Questionable Domain by User Verified
+```{r}
+ggplot(dft, aes(questionable_domain, fill = user_verified)) + 
+geom_bar(aes(y = (..count..)/sum(..count..))) + 
+  geom_text(aes(y = (..count..)/sum(..count..), 
+                label = paste0(round(prop.table(..count..) * 100, 2), '%')), 
+                stat = 'count', 
+                position = position_stack(vjust = .8), 
+                size = 3,
+                colour = "black") + 
+  scale_y_continuous(labels = scales::percent) + 
+  ylab("Percentage") + xlab("Questionable Domain") +
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+
+Plotting Questionable Domain by Contains Profanity
+```{r}
+ggplot(dft, aes(questionable_domain, fill = contains_profanity)) + 
+geom_bar(aes(y = (..count..)/sum(..count..))) + 
+  geom_text(aes(y = (..count..)/sum(..count..), 
+                label = paste0(round(prop.table(..count..) * 100, 2), '%')), 
+                stat = 'count', 
+                position = position_stack(vjust = .8), 
+                size = 3,
+                colour = "black") + 
+  scale_y_continuous(labels = scales::percent) + 
+  ylab("Percentage") + xlab("Questionable Domain") +
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+
+Plotting Questionable Domain by Mentions
+```{r}
+ggplot(dft, aes(questionable_domain, fill = mentions)) + 
+geom_bar(aes(y = (..count..)/sum(..count..))) + 
+  geom_text(aes(y = (..count..)/sum(..count..), 
+                label = paste0(round(prop.table(..count..) * 100, 2), '%')), 
+                stat = 'count', 
+                position = position_stack(vjust = .8), 
+                size = 3,
+                colour = "black") + 
+  scale_y_continuous(labels = scales::percent) + 
+  ylab("Percentage") + xlab("Questinable Domain") +
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+Plotting Questionable Domain by Hashtags
+```{r}
+ggplot(dft, aes(questionable_domain, fill = hashtag)) + 
+geom_bar(aes(y = (..count..)/sum(..count..))) + 
+  geom_text(aes(y = (..count..)/sum(..count..), 
+                label = paste0(round(prop.table(..count..) * 100, 2), '%')), 
+                stat = 'count', 
+                position = position_stack(vjust = .8), 
+                size = 3,
+                colour = "black") + 
+  scale_y_continuous(labels = scales::percent) + 
+  ylab("Percentage") + xlab("Questinable Domain") +
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+
+Plotting Questionable Domain by URLs
+```{r}
+# creating a corpus
+tweets_url = corpus(dft$domain) # corpus collection of documents
+tweets_url = dfm(tweets_url, tolower = TRUE)
+
+features_dfm_tweets = textstat_frequency(tweets_url, n=30) # 30 words here
+
+rel_freq = textstat_frequency(tweets_url, groups = dft$questionable_domain, n=30)
+rel_freq$frequency = rel_freq$frequency / max(features_dfm_tweets$frequency)
+
+pf = ggplot(data=rel_freq,
+            aes(x=reorder(feature, frequency),
+                y=frequency, fill=group)) + 
+              geom_bar(stat="identity", 
+                       position = position_dodge2(width = 0.9, preserve="single")) +
+  scale_fill_manual(values = c("#AAB8C2", "#00acee")) +
+  coord_flip() +
+  theme(legend.position = "none") +
+  labs(x=NULL, y="Frequency") +
+  theme_minimal()
+pf
+```
+
+
+Creating a Corpus
+```{r}
+# creating a corpus
+tweets_corpus = corpus(tweets$description) # corpus collection of documents
+```
+
+
+Hashtags analysis
+```{r}
+tweets_tokens = tokens(tweets_corpus, remove_punct = TRUE)
+
+tweets_dfm = dfm(tweets_tokens)
+
+#Extract most common hashtags
+tag_dfm = dfm_select(tweets_dfm, pattern = "#*")
+toptag = names(topfeatures(tag_dfm, 20))
+head(toptag)
+
+#Construct feature-occurrence matrix of hashtags
+tag_fcm = fcm(tag_dfm)
+head(tag_fcm)
+
+topgat_fcm = fcm_select(tag_fcm, pattern = toptag)
+textplot_network(topgat_fcm, min_freq = 0.1, edge_alpha = 0.8, edge_size = 5)
+```
+
+Mentions analysis
+```{r}
+#Extract most frequently mentioned usernames
+user_dfm = dfm_select(tweets_dfm, pattern = "@*")
+topuser = names(topfeatures(user_dfm, 20))
+head(topuser)
+
+#Construct feature-occurrence matrix of usernames
+user_fcm = fcm(user_dfm)
+head(user_fcm)
+
+user_fcm = fcm_select(user_fcm, pattern = topuser)
+textplot_network(user_fcm, min_freq = 0.1, edge_color = "orange", edge_alpha = 0.8, edge_size = 5)
+```
+
+
+Creating tokens, removing no important words, treating the data - questionable domain = TRUE
+```{r}
+# creating a corpus
+tweets_corpus = corpus(tweets$description[tweets$questionable_domain == "TRUE"]) # corpus collection of documents
+
+tweets_tokens = tokens(tweets_corpus,
+                       remove_punct = TRUE,
+                       remove_symbols = TRUE,
+                       split_hyphens = TRUE,
+                       remove_url = TRUE,
+                       remove_numbers = TRUE)
+
+tweets_clean = tokens_wordstem(tweets_tokens)
+
+tweets_clean = dfm(tweets_clean, tolower = TRUE)
+tweets_clean = dfm_remove(tweets_clean, stopwords("english"))
+tweets_clean = dfm_remove(tweets_clean, c('â', 's', 't'))
+
+tweets_clean = tweets_clean[, order(featnames(tweets_clean))]
+tweets_clean
+tweets_clean[, 1550:1561]
+dim(tweets_clean)
+
+
+
+tweets_clean = tweets_clean[, order(featnames(tweets_clean))]
+
+set.seed(100)
+textplot_wordcloud(tweets_clean, random_order = FALSE,
+                  rotation = .25, max_words = 100,
+                  color = RColorBrewer::brewer.pal(8, "Dark2"))
+
+```
+
+
+Creating tokens, removing no important words, treating the data - questionable domain = FALSE
+```{r}
+# creating a corpus
+tweets_corpus = corpus(tweets$description[tweets$questionable_domain == "FALSE"]) # corpus collection of documents
+
+tweets_tokens = tokens(tweets_corpus,
+                       remove_punct = TRUE,
+                       remove_symbols = TRUE,
+                       split_hyphens = TRUE,
+                       remove_url = TRUE,
+                       remove_numbers = TRUE)
+
+tweets_clean = tokens_wordstem(tweets_tokens)
+
+tweets_clean = dfm(tweets_clean, tolower = TRUE)
+tweets_clean = dfm_remove(tweets_clean, stopwords("english"))
+tweets_clean = dfm_remove(tweets_clean, c('â', 's', 't'))
+
+tweets_clean = tweets_clean[, order(featnames(tweets_clean))]
+tweets_clean
+tweets_clean[, 1550:1561]
+dim(tweets_clean)
+
+
+
+tweets_clean = tweets_clean[, order(featnames(tweets_clean))]
+
+set.seed(100)
+textplot_wordcloud(tweets_clean, random_order = FALSE,
+                  rotation = .25, max_words = 100,
+                  color = RColorBrewer::brewer.pal(11, "RdBu"))
+                 # color = RColorBrewer::brewer.pal(8, "Dark2"))
+
+```
+
+
+Creating tokens, removing no important words, treating the data 
+```{r}
+# creating a corpus
+tweets_corpus = corpus(tweets$description) # corpus collection of documents
+
+tweets_tokens = tokens(tweets_corpus,
+                       remove_punct = TRUE,
+                       remove_symbols = TRUE,
+                       split_hyphens = TRUE,
+                       remove_url = TRUE,
+                       remove_numbers = TRUE)
+
+tweets_clean = tokens_wordstem(tweets_tokens)
+
+tweets_clean = dfm(tweets_clean, tolower = TRUE)
+tweets_clean = dfm_remove(tweets_clean, stopwords("english"))
+tweets_clean = dfm_remove(tweets_clean, c('â', 's', 't'))
+
+tweets_clean = tweets_clean[, order(featnames(tweets_clean))]
+tweets_clean
+tweets_clean[, 1550:1561]
+dim(tweets_clean)
+
+
+
+tweets_clean = tweets_clean[, order(featnames(tweets_clean))]
+
+set.seed(100)
+textplot_wordcloud(tweets_clean, random_order = FALSE,
+                  rotation = .25, max_words = 100,
+                  color = RColorBrewer:: brewer.pal(11,"RdBu"))
+
+```
+
+
+Frequence analysis
+```{r}
+features_dfm_tweets = textstat_frequency(tweets_clean, n=20) # 20 words here
+
+rel_freq = textstat_frequency(tweets_clean, groups = dft$questionable_domain, n=20)
+rel_freq$frequency = rel_freq$frequency / max(features_dfm_tweets$frequency)
+
+```
+
+Plotting the frequency by target class
+```{r}
+pf = ggplot(data=rel_freq,
+            aes(x=reorder(feature, frequency),
+                y=frequency, fill=group)) + 
+              geom_bar(stat="identity", 
+                       position = position_dodge2(width = 0.9, preserve="single")) +
+  scale_fill_manual(values = c("#AAB8C2", "#00acee")) +
+  coord_flip() +
+  theme(legend.position = "none") +
+  labs(x=NULL, y="Frequency") +
+  theme_minimal()
+pf
+
+```
+
+Bi-gram token analysis
+```{r}
+tweets_tokens = tokens(tweets_corpus,
+                       remove_punct = TRUE,
+                       remove_symbols = TRUE,
+                       split_hyphens = TRUE,
+                       remove_url = TRUE,
+                       remove_numbers = TRUE)
+
+tweets_tokens = tokens_tolower(tweets_tokens, keep_acronyms = FALSE)
+
+tweets_tokens = tokens_remove(tokens(tweets_tokens, remove_punct = TRUE), stopwords("english"))
+tweets_tokens = tokens_remove(tweets_tokens, c('â', 's', 't'))
+
+tweets_2gram = tokens_ngrams(tweets_tokens, n=2)
+
+tweets_2gram = dfm(tweets_2gram)
+```
+
+
+Relative frequency 
+```{r}
+features_2gran_tweets = textstat_frequency(tweets_2gram, n=20) # 20 words here
+features_2gran_tweets
+
+rel_freq_2gram = textstat_frequency(tweets_2gram, groups = dft$questionable_domain, n=20)
+rel_freq_2gram$frequency = rel_freq_2gram$frequency / max(features_2gran_tweets$frequency)
+rel_freq_2gram
+```
+
+Plotting the frequency by target class
+```{r}
+pf = ggplot(data=rel_freq_2gram,
+            aes(x=reorder(feature, frequency),
+                y=frequency, fill=group)) + 
+              geom_bar(stat="identity", 
+                       position = position_dodge2(width = 0.9, preserve="single")) +
+  #scale_fill_manual(values = c('seagreen','firebrick')) + 
+  scale_fill_manual(values = c("#AAB8C2", "#00acee")) +
+  coord_flip() +
+  theme(legend.position = "none") +
+  labs(x=NULL, y="Frequency") +
+  theme_minimal()
+pf
+```
+
+
+Find associations with "trump", "gop", "realdonaldtrump", "amp" and 0.15 minimum correlation
+```{r}
+TextDoc = Corpus(VectorSource(tweets$description))
+#Replacing "/", "@" and "|" with space
+toSpace = content_transformer(function(x, pattern) gsub(pattern, " ", x))
+TextDoc = tm_map(TextDoc, toSpace, "/")
+TextDoc = tm_map(TextDoc, toSpace, "@")
+TextDoc = tm_map(TextDoc, toSpace, "\\|")
+# Convert the text to lower case
+TextDoc = tm_map(TextDoc, content_transformer(tolower))
+# Remove numbers
+TextDoc = tm_map(TextDoc, removeNumbers)
+# Remove english common stopwords
+TextDoc = tm_map(TextDoc, removeWords, stopwords("english"))
+# Remove your own stop word
+# specify your custom stopwords as a character vector
+TextDoc = tm_map(TextDoc, removeWords, c('â', 's', 't'))
+# Remove punctuations
+TextDoc = tm_map(TextDoc, removePunctuation)
+# Eliminate extra white spaces
+TextDoc = tm_map(TextDoc, stripWhitespace)
+# Text stemming - which reduces words to their root form
+TextDoc = tm_map(TextDoc, stemDocument)
+
+tdm = TermDocumentMatrix(TextDoc)
+assocs = findAssocs(tdm, terms = c("trump", "gop", "realdonaldtrump", "gatewaypundit"), corlimit = 0.15)
+```
+
+```{r}
+assocs
+```
+
+
+```{r}
+dft$uppercase_count = str_count( dft$title, "[A-Z]") / str_count(dft$title)
+```
+
+```{r}
+ggplot(dft, aes(x=uppercase_count, color=questionable_domain)) +
+  geom_histogram(fill="white")
+# Overlaid histograms
+ggplot(dft, aes(x=uppercase_count, color=questionable_domain)) +
+  geom_histogram(fill="white", alpha=0.5, position="identity") + 
+  scale_fill_manual(values = c('seagreen','firebrick'))
+```
+
+```{r}
+ggplot(dft, aes(y=uppercase_count, x=questionable_domain, fill=questionable_domain)) +
+  geom_violin() + scale_fill_manual(values = c('seagreen','firebrick')) +
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+
+
+# extraindo sentimentos de cada tweet frase a frase
+```{r}
+get_emotions = function(x, output){
+  
+  sv = get_sentences(x["description"])
+  
+  nrc_data = get_nrc_sentiment(sv)
+  
+  emo = unique(names(nrc_data[, 1:8])[which(nrc_data[, 1:8] > 0, arr.ind=T)[, "col"]])
+  
+  return (emo)
+  
+} 
+```
+
+```{r}
+dft$sentiments = apply(dft, 1, get_emotions)
+```
+
+```{r}
+dft %>%
+  unnest(cols = c(sentiments)) %>%
+  ggplot() + 
+  aes(sentiments, fill=questionable_domain) +
+  geom_bar(position = position_dodge2(width = 0.9, preserve="single")) +
+  scale_fill_manual(values = c("red", "darkgreen")) +
+  coord_flip() +
+  ggtitle("Emotions in tweets") + 
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+```{r}
+
+concatlist <- function(x, output){
+  
+
+  sv <- append(x$sentiments, x$questionable_domain)
+  
+  return (sv)
+  
+} 
+
+dft$test <- apply(dft, 1, concatlist)
+```
+
+```{r}
+
+trans <- as(dft$test,"transactions")
+
+```
+
+```{r}
+
+rules <- apriori(trans, parameter = list(supp = 0.02, conf = 0.8))
+rules.sub <- subset(rules, subset = rhs %in% c("FALSE"))
+rules.sort <- sort(rules.sub, by = "confidence")
+inspectDT(rules.sort[1:10])
+```
+
+```{r}
+
+rules <- apriori(trans, parameter = list(supp = 0.01, conf = 0.1))
+
+rules.sub <- subset(rules, subset = rhs %in% c("TRUE"))
+rules.sort <- sort(rules.sub, by = "confidence")
+inspectDT(rules.sort)
+```
+
+```{r}
+
+
+emotions_search <- function(x, output){
+  
+
+  if(all(c("anticipation", "fear", "trust") %in% x$sentiments)){
+    return(1)
+  }else{
+    return(0)
+  }
+  
+} 
+
+dft$has_emotions_aft <- apply(dft, 1, emotions_search)
+
+
+dft %>%
+  ggplot() + 
+  aes(has_emotions_aft, fill=questionable_domain) +
+  geom_bar(position = position_dodge2(width = 0.9, preserve="single")) +
+  scale_fill_manual(values = c("red", "darkgreen")) +
+  coord_flip() +
+  ggtitle("Emotions in tweets") + 
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+
+```
+
+```{r}
+
+emotions_search <- function(x, output){
+  
+
+  if(all(c("anger", "trust") %in% x$sentiments)){
+    return(1)
+  }else{
+    return(0)
+  }
+  
+} 
+
+dft$has_emotions_at <- apply(dft, 1, emotions_search)
+
+
+dft %>%
+  ggplot() + 
+  aes(has_emotions_at, fill=questionable_domain) +
+  geom_bar(position = position_dodge2(width = 0.9, preserve="single")) +
+  scale_fill_manual(values = c("red", "darkgreen")) +
+  coord_flip() +
+  ggtitle("Emotions in tweets") + 
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+```{r}
+
+emotions_search <- function(x, output){
+  
+
+  if(all(c("anticipation", "sadness") %in% x$sentiments)){
+    return(1)
+  }else{
+    return(0)
+  }
+  
+} 
+
+dft$has_emotions_as <- apply(dft, 1, emotions_search)
+
+
+dft %>%
+  ggplot() + 
+  aes(has_emotions_as, fill=questionable_domain) +
+  geom_bar(position = position_dodge2(width = 0.9, preserve="single")) +
+  scale_fill_manual(values = c("red", "darkgreen")) +
+  coord_flip() +
+  ggtitle("Emotions in tweets") + 
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+```{r}
+
+emotions_search <- function(x, output){
+  
+
+  if(all(c("anticipation", "fear") %in% x$sentiments)){
+    return(1)
+  }else{
+    return(0)
+  }
+  
+} 
+
+dft$has_emotions_af <- apply(dft, 1, emotions_search)
+
+
+dft %>%
+  ggplot() + 
+  aes(has_emotions_af, fill=questionable_domain) +
+  geom_bar(position = position_dodge2(width = 0.9, preserve="single")) +
+  scale_fill_manual(values = c("red", "darkgreen")) +
+  coord_flip() +
+  ggtitle("Emotions in tweets") + 
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+
+```
+
+Getting the amount of sentiment present in each tweet line
+```{r}
+dft$sentiment_size = lengths(dft$sentiments)
+```
+
+
+
+```{r}
+library(stringi)
+
+dft$dup = stri_replace_all_regex(dft$description, "https\\S*", "")
+
+dft$tweets_dup = c(duplicated(dft$dup, fromLast = TRUE) | duplicated(dft$dup))
+
+```
+
+
+
+```{r}
+
+dft$tweets_dup = as.integer(as.logical(dft$tweets_dup))
+
+```
+
+
+
+```{r}
+
+df3 = dft[dft$tweets_dup == 'TRUE', ]
+
+df4 = dft[dft$questionable_domain == 'TRUE', ]
+
+```
+
+```{r}
+# Proportion graph with label in the axis
+ggplot(df4, aes(tweets_dup, fill = questionable_domain)) +
+  geom_bar(aes(y = (..count..)/sum(..count..)), position = "dodge") + 
+  geom_text(aes(y = (..count..)/sum(..count..), 
+                label = paste0(round(prop.table(..count..) * 100, 2), '%')), 
+                stat = 'count', 
+                position = position_stack(vjust = .9), 
+                size = 4,
+                colour = "white") + 
+  scale_y_continuous(labels = scales::percent) + 
+  ylab("Percentage") + xlab("Tweets Duplicados") +
+  theme(legend.position="none") + 
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+  
+```
+
+
+```{r}
+#construct a bag of words
+# sources:
+## https://stackoverflow.com/questions/65140308/in-r-how-can-i-count-specific-words-in-a-corpus
+mydict = dictionary(list(all_terms = c("via","video","georgia","breaking","@gop","@realdonaldtrump")))
+dfmat = tokens(tweets_corpus) %>%
+  tokens_select(mydict) %>%
+  dfm()
+dfmat
+table_mydict=convert(dfmat, to = "data.frame")
+table_mydict
+textstat_frequency(dfmat)
+tweets$new=rowSums(dfmat[, -1])
+head(tweets)
+tweets$new
+tweets$new = as.numeric(tweets$new)
+filter(tweets,new==4)
+
+dft$bag_of_words = tweets$new
+
+```
+
+
+```{r}
+dft$symbol_count = str_count(dft$description, "[[:punct:]]+") 
+```
+
+```{r}
+ggplot(dft, aes(x=uppercase_count, color=questionable_domain)) +
+  geom_histogram(fill="white")
+# Overlaid histograms
+ggplot(dft, aes(x=uppercase_count, color=questionable_domain)) +
+  geom_histogram(fill="white", alpha=0.5, position="identity")
+```
+
+
+```{r}
+ggplot(dft, aes(symbol_count, fill = questionable_domain)) +
+  geom_bar(position = "dodge") 
+```
+
+
+```{r}
+dft$exc_count = str_count(dft$description, "!") 
+```
+
+
+```{r}
+ggplot(dft, aes(factor(exc_count), fill = questionable_domain)) +
+  geom_bar(position = "dodge") 
+```
+
+
+
+```{r}
+dft$exp_count = str_count(dft$description, "\'") 
+```
+
+
+```{r}
+ggplot(dft, aes(factor(exp_count), fill = questionable_domain)) +
+  geom_bar(position = "dodge") 
+```
+
+```{r}
+dft$number_count = str_count(dft$description, "[0-9]") 
+```
+
+
+```{r}
+ggplot(dft, aes(factor(number_count), fill = questionable_domain)) +
+  geom_bar(position = "dodge") 
+```
+
+
+```{r}
+dft$upper_word_count = str_count(dft$dup, "\\b[A-Z]\\w+")
+```
+
+
+```{r}
+ggplot(dft, aes(factor(upper_word_count), fill = questionable_domain)) +
+  geom_bar(position = "dodge") + 
+  scale_fill_manual(values = c("#AAB8C2", "#00acee"))
+```
+
+
+```{r}
+dft$nsentence=quanteda::nsentence(tweets_corpus)
+dft$ntoken=quanteda::ntoken(tweets_corpus)
+```
+
+```{r}
+#Plotting graphic representations of differences in terms of Questionable Domain
+##regarding number of sentences and number of tokens
+
+dft1 = filter(dft,questionable_domain=="FALSE")
+dft2 = filter(dft,questionable_domain=="TRUE")
+
+#Histogram with density plot for number of tokens
+p1 = ggplot(dft1, aes(x=ntoken))+ geom_histogram(aes(y=..density..), colour="black", fill="white")+geom_density(alpha=.4, fill="#00acee") 
+p1+geom_vline(aes(xintercept=mean(ntoken)),color="#00acee", linetype="dashed", size=1)
+ 
+p2 = ggplot(dft2, aes(x=ntoken))+ geom_histogram(aes(y=..density..), colour="black", fill="white")+geom_density(alpha=.4, fill="#00acee") 
+p2+geom_vline(aes(xintercept=mean(ntoken)),color="#00acee", linetype="dashed", size=1)
+ 
+ 
+library(patchwork)
+p1+p2
+```
+
+```{r}
+#Now for sentences
+
+s1 = ggplot(dft1, aes(x=factor(nsentence)))+ 
+geom_bar(aes(y = (..count..)/sum(..count..))) + 
+  geom_text(aes(y = (..count..)/sum(..count..), 
+                label = paste0(round(prop.table(..count..) * 100, 2), '%')), 
+                stat = 'count', 
+                position = position_stack(vjust = .8), 
+                size = 3,
+                colour = "#00acee") + 
+  scale_y_continuous(labels = scales::percent) + 
+  ylab("Percentage") + xlab("Number of tokens - tweets from reliable domain")
+
+
+s2 = ggplot(dft2, aes(x=factor(nsentence)))+ 
+geom_bar(aes(y = (..count..)/sum(..count..))) + 
+  geom_text(aes(y = (..count..)/sum(..count..), 
+                label = paste0(round(prop.table(..count..) * 100, 2), '%')), 
+                stat = 'count', 
+                position = position_stack(vjust = .8), 
+                size = 3,
+                colour = "#00acee") + 
+  scale_y_continuous(labels = scales::percent) + 
+  ylab("Percentage") + xlab("Number of tokens - tweets from questionable domain")
+```
+
+
+```{r}
+#------------------Sentiment Analysis with various lexicons
+text.tweets = tibble(text=str_to_lower(dft$description))
+text.tweets
+```
+
+```{r}
+Fake_tweets = filter(dft,dft$questionable_domain=="TRUE")
+True_tweets = filter(dft,dft$questionable_domain=="FALSE")
+text.tweets_FAKE = tibble(text=str_to_lower(Fake_tweets$description))
+text.tweets_TRUE = tibble(text=str_to_lower(True_tweets$description))
+```
+
+```{r}
+#analyse sentiments using syuzhet package based on NRC sentiments
+# -- Get NRC Sentiment
+# The get_nrc_sentiment function returns a data frame in which
+# each row represents a sentence from the original file.
+# The columns include one for each emotion type was well as the
+# positive or negative sentiment valence.
+emotions_all = get_nrc_sentiment(text.tweets_FAKE$text)
+emo_bar_all = colSums(emotions_all)
+emo_sum = data.frame(count=emo_bar_all,emotion=names(emo_bar_all))
+emo_sum
+```
+
+```{r}
+#Create a barplot showing the counts for each of eight different emotions
+##and positive/negative ratings
+ggplot(emo_sum,aes(x=reorder(emotion,-count),y=count)) +
+  geom_bar(stat="identity")
+```
+
+```{r}
+#sentiment analysis with the tidytext package using the "bing" lexicon
+#--------------FAKE TWEETS-----------#
+library(tidytext)
+bing_word_counts = text.tweets_FAKE %>% 
+  unnest_tokens(output=word, input=text) %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort=TRUE)
+bing_word_counts
+```
+
+```{r}
+#select top 10 words by sentiment
+bing_top_10_words_by_sentiment_FAKE = bing_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(order_by=n, n=10) %>%
+  ungroup() %>%
+  mutate(word=reorder(word, n))
+bing_top_10_words_by_sentiment_FAKE
+```
+
+```{r}
+#create a barplot showing contribution of words to sentiment
+bing_top_10_words_by_sentiment_FAKE %>%
+  ggplot(aes(word, n, fill=sentiment)) +
+  geom_col(show.legend=FALSE) +
+  facet_wrap(~sentiment, scales="free_y") +
+  labs(y="Contribution of sentiment", x=NULL) +
+  coord_flip()
+```
+
+```{r}
+#-----------------------Loughran lexicon-------------#
+##----------FAKE TWEETS--------------------##
+#sentiment analysis with the tidytext package using "loughran" lexicon 
+loughran_word_counts = text.tweets_FAKE %>%
+  unnest_tokens(output=word, input=text) %>%
+  inner_join(get_sentiments("loughran")) %>%
+  count(word, sentiment, sort=TRUE)
+```
+
+```{r}
+#select top 10 by sentiment
+loughran_top10_words_by_sentiment_FAKE = loughran_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(order_by=n, n=10)%>%
+  ungroup() %>%
+  mutate(word=reorder(word, n))
+loughran_top10_words_by_sentiment_FAKE
+```
+
+```{r}
+#create a barplot showing contribution of words to sentiments
+loughran_top10_words_by_sentiment_FAKE %>%
+  ggplot(aes(word, n, fill=sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales="free_y") +
+  labs(y="Contribution to sentiment", x=NULL) +
+  coord_flip()
+```
+
+```{r}
+#-----------------------Loughran lexicon-------------#
+##----------TRUE TWEETS--------------------##
+#sentiment analysis with the tidytext package using "loughran" lexicon 
+loughran_word_counts = text.tweets_TRUE %>%
+  unnest_tokens(output=word, input=text) %>%
+  inner_join(get_sentiments("loughran")) %>%
+  count(word,sentiment, sort=TRUE)
+```
+
+```{r}
+#select top 10 by sentiment
+loughran_top10_words_by_sentiment_TRUE = loughran_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(order_by=n, n=10) %>%
+  ungroup() %>%
+  mutate(word=reorder(word, n))
+loughran_top10_words_by_sentiment_FAKE
+
+#create a barplot showing contribution of words to sentiments
+loughran_top10_words_by_sentiment_TRUE %>%
+  ggplot(aes(word,n,fill=sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales="free_y") +
+  labs(y="Contribution to sentiment", x=NULL) +
+  coord_flip()
+```
+
+```{r}
+#textstat_collocations: Identify and score multi-word expressions
+tweets_coll = textstat_collocations(
+  tweets_tokens,
+  method = "lambda",
+  size = 2,
+  min_count = 400,
+  smoothing = 0.5,
+  tolower = TRUE
+)
+tweets_coll
+```
+
+```{r}
+# co-ocurrence network
+#turn into tabular format documents
+tweets_dfm = tweets_tokens%>%quanteda::dfm(remove=stopwords("english"), remove_punct=TRUE) %>%
+quanteda::dfm_trim(min_termfreq = 100, verbose=FALSE)
+source("https://slcladal.github.io/rscripts/calculateCoocStatistics.R")
+#define term
+coocterm = "biden"
+#calculate co-occurrence statistics
+coocs = calculateCoocStatistics(coocterm, tweets_dfm, measure="LOGLIK")
+coocs[1:20]
+#reduce the document feature matrix to contain only the top 20 collates
+redux_dfm = dfm_select(tweets_dfm, pattern=c(names(coocs)[1:20], "trump"))
+#transform the document feature matrix into a feature co-occurence matrix
+tag_fcm = fcm(redux_dfm)
+#create graph
+textplot_network(tag_fcm,
+                 #min_freq = 100,
+                 edge_alpha = 0.7,
+                 edge_size = 5,
+                 edge_color = "#1DA1F2",
+                 vertex_labelsize = 3
+                 )
+```
+
+
+Baseline model - separate the data into train and test split
+```{r}
+set.seed(3456)
+trainIndex = createDataPartition(dft$questionable_domain, p = .8,
+                                  list = FALSE,
+                                  times = 1)
+dft$questionable_domain = as.factor(dft$questionable_domain)
+dft$user_verified = as.integer(dft$user_verified)
+dft$mentions = as.integer(dft$mentions)
+dft$hashtag = as.integer(dft$hashtag)
+dft$contains_profanity = as.integer(dft$contains_profanity)
+
+train = dft[ trainIndex,]
+test = dft[-trainIndex,]
+```
+
+
+Baseline models
+```{r}
+suppressWarnings({ 
+dfr = data.frame(colnames(c('Sensitivity', 'Specificity', 'Pos Pred Value', 
+                            'Neg Pred Value', 'Precision', 'Recall', 'F1', 
+                            'Prevalence', 'Detection Rate', 
+                            'Detection Prevalence', 'Balanced Accuracy')))
+
+lr = logistic_reg() %>% 
+    set_engine("glm")
+
+nbc = naive_Bayes() %>% 
+  set_engine("klaR") %>% set_mode("classification")
+
+knn = nearest_neighbor(neighbors = 11, weight_func = "triangular") %>%
+    # This model can be used for classification or regression, so set mode
+    set_mode("classification") %>%
+    set_engine("kknn")
+
+boost = boost_tree(trees = 15) %>% 
+    # This model can be used for classification or regression, so set mode
+    set_mode("classification") %>% 
+    set_engine("xgboost")
+
+for (idx in 1:4)
+{
+  
+  if(idx == 1){
+   model_fit = lr %>% fit(questionable_domain ~ user_friends_count + 
+                        user_followers_count + user_favourites_count + 
+                        user_verified + retweet_count + contains_profanity 
+                        + mentions + hashtag, 
+                      data = train)
+  }else if(idx == 2){
+   model_fit = nbc %>% fit(questionable_domain ~ user_friends_count + 
+                        user_followers_count + user_favourites_count + 
+                        user_verified + retweet_count + contains_profanity 
+                        + mentions  + hashtag, 
+                      data = train)
+  }else if(idx == 3){
+   model_fit = knn %>% fit(questionable_domain ~ user_friends_count + 
+                        user_followers_count + user_favourites_count + 
+                        user_verified + retweet_count + contains_profanity 
+                        + mentions  + hashtag, 
+                      data = train)
+  }else if(idx == 4){
+   model_fit = boost %>% fit(questionable_domain ~ user_friends_count + 
+                        user_followers_count + user_favourites_count + 
+                        user_verified + retweet_count + contains_profanity 
+                        + mentions  + hashtag, 
+                      data = train)
+  }
+  
+  pred = predict(model_fit, test)
+  
+  Precision(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Recall(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Accuracy(pred$.pred_class, test$questionable_domain)
+  cm = confusionMatrix(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  
+  if(idx == 1){
+   dfr = data.frame(LR_BL = cm$byClass)
+  }else if(idx == 2){
+   dfr = cbind(dfr, data.frame(NBC_BL = cm$byClass))
+  }else if(idx == 3){
+   dfr = cbind(dfr, data.frame(KNN_BL = cm$byClass))
+  }else if(idx == 4){
+   dfr = cbind(dfr, data.frame(XGB_BL = cm$byClass))
+  }
+}
+})
+```
+
+
+Creating a new one-hot-encoding columns for the variables that separates better the questionable domain
+```{r}
+dft$gop = grepl('@gop*', dft$description)
+dft$trump = grepl('trump*', dft$description)
+dft$realdonaldtrump = grepl('@realdonaldtrump*', dft$description)
+dft$amp = grepl('amp*', dft$description)
+
+dft$description = tolower(dft$description)
+dft$via_gatewaypundit = grepl('via @gatewaypundit*', dft$description)
+dft$new_york = grepl('new york*', dft$description)
+dft$exclusive = grepl('exclusive*', dft$description)
+dft$breaking = grepl('breaking*', dft$description)
+
+dft$via_gatewaypundit = grepl('via @gatewaypundit*', dft$description)
+dft$new_york = grepl('new york*', dft$description)
+dft$via_nytimes = grepl('via @nytimes*', dft$description)
+dft$via_yahoo = grepl('via @yahoo*', dft$description)
+dft$donald_trump = grepl('donald trump*', dft$description)
+dft$white_house = grepl('white house*', dft$description)
+dft$gop_realdonaldtrump = grepl('@gop @realdonaldtrump*', dft$description)
+dft$voter_fraud = grepl('voter fraud*', dft$description)
+dft$via_yahoonews = grepl('via @yahoonews*', dft$description)
+dft$senategop_housegop = grepl('@senategop @housegop*', dft$description)
+dft$via_googlenews = grepl('via @googlenews*', dft$description)
+dft$trump_administration = grepl('trump administration*', dft$description)
+dft$trump_campaign = grepl('trump campaign*', dft$description)
+dft$president_elect = grepl('president elect*', dft$description)
+dft$washington_post = grepl('washington post*', dft$description)
+dft$video_via = grepl('video via*', dft$description)
+dft$hunter_biden = grepl('hunter biden*', dft$description)
+
+dft$gopchairwoman = grepl('gopchairwoman*', dft$description)
+dft$senategop = grepl('senategop*', dft$description)
+dft$whitehous = grepl('whitehous*', dft$description)
+dft$housegop = grepl('housegop*', dft$description)
+dft$donald = grepl('donald*', dft$description)
+dft$video = grepl('video*', dft$description)
+dft$statist = grepl('statist*', dft$description)
+dft$releas = grepl('releas*', dft$description)
+dft$joe = grepl('joe*', dft$description)
+dft$attorney = grepl('attorney*', dft$description)
+dft$kraken = grepl('kraken*', dft$description)
+```
+
+
+```{r}
+dmy = dummyVars(" ~ domain", data = dft)
+trsf = data.frame(predict(dmy, newdata = dft))
+dft = cbind(dft, trsf)
+```
+
+
+Selecting just the most relevant features 
+```{r}
+dft1 = dft
+dft = dft[c("questionable_domain", "user_friends_count", "user_followers_count", "user_favourites_count", "user_verified", "favorite_count", "retweet_count", "contains_profanity", "url", "url_new", "mentions", "hashtag", "hashtag_count", "mention_count", "url_count", "uppercase_count", "has_emotions_aft", "has_emotions_at", "has_emotions_as", "has_emotions_af", "sentiment_size", "tweets_dup", "bag_of_words", "symbol_count", "exc_count", "exp_count", "number_count", 
+"upper_word_count", "nsentence", "ntoken", "gop", "trump", "realdonaldtrump", 
+"via_gatewaypundit", "new_york", "exclusive", "breaking", "via_nytimes", "via_yahoo", "donald_trump", "white_house" , "gop_realdonaldtrump", "voter_fraud", "via_yahoonews", "senategop_housegop", "via_googlenews", "trump_administration", "trump_campaign", "president_elect", "washington_post", "video_via", "hunter_biden", "gopchairwoman", "senategop", "whitehous", "housegop", "donald", "video", "statist", "releas",  "joe", "attorney", "kraken", "domainwashingtonpost", "domaincnn", "domainyahoo", "domainnbcnews", "domainpolitico", "domainbusinessinsider", "domainapnews", "domainusatoday", "domaintheatlantic", "domainmsn", "domaincbsnews", "domainreuters", "domainbbc", "domainaxios", "domainlatimes", "domainnewyorker", "domainslate", "domaingo", "domainnymag", "domaingoogle", "domaintime", "domainmediaite", "domainusnews", "domainrollingstone", "domainnationalreview", "domainmotherjones", "domainnydailynews", "domainmarketwatch", "domaininquirer", "domainthegatewaypundit", "domaindailymail", "domainwesternjournal", "domainzerohedge",
+"domainparler", "domainamericanthinker", "domainpoliticalflare", "domainwaynedupree", "domaintheconservativetreehouse", "domainnationalfile", "domaingellerreport", "domainwnd", "domaindjhjmedia", "domaindavidharrisjr", "domainbigleaguepolitics", "domainthepoliticalinsider", "domainbeforeitsnews", "domainindependent", "domaindiscoverthenetworks", "domainfrontpagemag", "domaininfowars", "domaindcdirtylaundry", "domainhannity", "domainconservativedailypost", "domainamericasfreedomfighters", "domainpopulist", "domainsummit", "domainjudicialwatch", "domainsputniknews", "domaintechnocracy")]
+
+```
+
+
+Improvement 1 - feature selection
+```{r}
+#define predictor and response variables in training set
+
+train = dft[ trainIndex,]
+test = dft[-trainIndex,]
+
+train_x = data.matrix(train[, c("user_friends_count", "user_followers_count", "user_favourites_count", "user_verified", "favorite_count", "retweet_count", "contains_profanity", "url", "url_new", "mentions", "hashtag", "hashtag_count", "mention_count", "url_count", "uppercase_count", "has_emotions_aft", "has_emotions_at", "has_emotions_as", "has_emotions_af", "sentiment_size", "tweets_dup", "bag_of_words", "symbol_count", "exc_count", "exp_count", "number_count", 
+"upper_word_count", "nsentence", "ntoken", "gop", "trump", "realdonaldtrump", 
+"via_gatewaypundit", "new_york", "exclusive", "breaking", "via_nytimes", "via_yahoo", "donald_trump", "white_house" , "gop_realdonaldtrump", "voter_fraud", "via_yahoonews", "senategop_housegop", "via_googlenews", "trump_administration", "trump_campaign", "president_elect", "washington_post", "video_via", "hunter_biden", "gopchairwoman", "senategop", "whitehous", "housegop", "donald", "video", "statist", "releas",  "joe", "attorney", "kraken", "domainwashingtonpost", "domaincnn", "domainyahoo", "domainnbcnews", "domainpolitico", "domainbusinessinsider", "domainapnews", "domainusatoday", "domaintheatlantic", "domainmsn", "domaincbsnews", "domainreuters", "domainbbc", "domainaxios", "domainlatimes", "domainnewyorker", "domainslate", "domaingo", "domainnymag", "domaingoogle", "domaintime", "domainmediaite", "domainusnews", "domainrollingstone", "domainnationalreview", "domainmotherjones", "domainnydailynews", "domainmarketwatch", "domaininquirer", "domainthegatewaypundit", "domaindailymail", "domainwesternjournal", "domainzerohedge",
+"domainparler", "domainamericanthinker", "domainpoliticalflare", "domainwaynedupree", "domaintheconservativetreehouse", "domainnationalfile", "domaingellerreport", "domainwnd", "domaindjhjmedia", "domaindavidharrisjr", "domainbigleaguepolitics", "domainthepoliticalinsider", "domainbeforeitsnews", "domainindependent", "domaindiscoverthenetworks", "domainfrontpagemag", "domaininfowars", "domaindcdirtylaundry", "domainhannity", "domainconservativedailypost", "domainamericasfreedomfighters", "domainpopulist", "domainsummit", "domainjudicialwatch", "domainsputniknews", "domaintechnocracy")])
+train_y = train[, c('questionable_domain')]
+
+#define predictor and response variables in testing set
+test_x = data.matrix(test[, c("user_friends_count", "user_followers_count", "user_favourites_count", "user_verified", "favorite_count", "retweet_count", "contains_profanity", "url", "url_new", "mentions", "hashtag", "hashtag_count", "mention_count", "url_count", "uppercase_count", "has_emotions_aft", "has_emotions_at", "has_emotions_as", "has_emotions_af", "sentiment_size", "tweets_dup", "bag_of_words", "symbol_count", "exc_count", "exp_count", "number_count", 
+"upper_word_count", "nsentence", "ntoken", "gop", "trump", "realdonaldtrump", 
+"via_gatewaypundit", "new_york", "exclusive", "breaking", "via_nytimes", "via_yahoo", "donald_trump", "white_house" , "gop_realdonaldtrump", "voter_fraud", "via_yahoonews", "senategop_housegop", "via_googlenews", "trump_administration", "trump_campaign", "president_elect", "washington_post", "video_via", "hunter_biden", "gopchairwoman", "senategop", "whitehous", "housegop", "donald", "video", "statist", "releas",  "joe", "attorney", "kraken", "domainwashingtonpost", "domaincnn", "domainyahoo", "domainnbcnews", "domainpolitico", "domainbusinessinsider", "domainapnews", "domainusatoday", "domaintheatlantic", "domainmsn", "domaincbsnews", "domainreuters", "domainbbc", "domainaxios", "domainlatimes", "domainnewyorker", "domainslate", "domaingo", "domainnymag", "domaingoogle", "domaintime", "domainmediaite", "domainusnews", "domainrollingstone", "domainnationalreview", "domainmotherjones", "domainnydailynews", "domainmarketwatch", "domaininquirer", "domainthegatewaypundit", "domaindailymail", "domainwesternjournal", "domainzerohedge",
+"domainparler", "domainamericanthinker", "domainpoliticalflare", "domainwaynedupree", "domaintheconservativetreehouse", "domainnationalfile", "domaingellerreport", "domainwnd", "domaindjhjmedia", "domaindavidharrisjr", "domainbigleaguepolitics", "domainthepoliticalinsider", "domainbeforeitsnews", "domainindependent", "domaindiscoverthenetworks", "domainfrontpagemag", "domaininfowars", "domaindcdirtylaundry", "domainhannity", "domainconservativedailypost", "domainamericasfreedomfighters", "domainpopulist", "domainsummit", "domainjudicialwatch", "domainsputniknews", "domaintechnocracy")])
+test_y = test[, c('questionable_domain')]
+
+#define final training and testing sets
+xgb_train = xgb.DMatrix(data = train_x, label = train_y)
+xgb_test = xgb.DMatrix(data = test_x, label = test_y)
+
+#defining a watchlist
+watchlist = list(train=xgb_train, test=xgb_test)
+
+#fit XGBoost model and display training and testing data at each iteartion
+model = xgb.train(data = xgb_train, watchlist=watchlist, nrounds = 100)
+
+#define final model
+model_xgboost = xgboost(data = xgb_train, nrounds = 86, verbose = 0)
+summary(model_xgboost)
+
+importance_matrix = xgb.importance(colnames(xgb_train), model = model_xgboost)
+View(importance_matrix)
+
+# Nice graph
+xgb.plot.importance(importance_matrix, top_n = 30)
+```
+
+
+```{r}
+dft = dft[c('questionable_domain', 'domainthegatewaypundit', 'domaindailymail', 'upper_word_count', 'domainamericanthinker', 'domainparler',
+'domainpoliticalflare', 'domaintheconservativetreehouse', 'user_followers_count', 'domainyahoo', 'domainwaynedupree',
+'domainnationalfile', 'number_count', 'domaininfowars', 'domaingellerreport', 'mention_count', 'domaindiscoverthenetworks',
+'domainindependent', 'user_friends_count', 'domainapnews', 'domainfrontpagemag', 'domainjudicialwatch','domaindjhjmedia', 
+'domainbeforeitsnews', 'bag_of_words', 'symbol_count', 'uppercase_count', 'domainsummit', 'domainsputniknews', 
+'domainwesternjournal', 'ntoken', 'domainzerohedge', 'domainpopulist', 'url_count', 'domainhannity', 
+'domainthepoliticalinsider', 'domaintechnocracy', 'user_favourites_count', 'domaindcdirtylaundry', 'domainbigleaguepolitics',
+'domainwnd', 'hashtag_count', 'nsentence', 'domaindavidharrisjr', 'senategop', 'domaintime', 'video', 'exc_count',
+'favorite_count', 'user_verified', 'mentions', 'white_house', 'domainamericasfreedomfighters', 'voter_fraud', 'has_emotions_aft',
+'hashtag', 'trump', 'sentiment_size', 'statist', 'exp_count', 'releas', 'domainslate', 'domainconservativedailypost', 'domainnymag', 
+'hunter_biden', 'breaking')]
+```
+
+
+Improvement 1 models - Including only important features
+```{r}
+dft$senategop = as.integer(dft$senategop)
+dft$video = as.integer(dft$video)
+dft$white_house = as.integer(dft$white_house)
+dft$voter_fraud = as.integer(dft$voter_fraud)
+dft$trump = as.integer(dft$trump)
+dft$statist = as.integer(dft$statist)
+dft$releas = as.integer(dft$releas)
+dft$hunter_biden = as.integer(dft$hunter_biden)
+dft$breaking = as.integer(dft$breaking)
+
+
+train = dft[ trainIndex,]
+test = dft[-trainIndex,]
+
+
+model_fit = knn %>% fit(questionable_domain ~., 
+                      data = train)
+  
+  
+pred = predict(model_fit, test)
+
+Precision(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+Recall(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+Accuracy(pred$.pred_class, test$questionable_domain)
+cm = confusionMatrix(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  
+
+dfr = cbind(dfr, data.frame(KNN_V1 = cm$byClass))
+```
+
+
+Improvement 2 models - including the predictive variables suggested after feature selection
+```{r}
+suppressWarnings({
+
+train = dft[ trainIndex,]
+test = dft[-trainIndex,]
+
+for (idx in 1:3)
+{
+  
+  if(idx == 1){
+   model_fit = lr %>% fit(questionable_domain ~ ., 
+                      data = train)
+  }else if(idx == 2){
+   model_fit = nbc %>% fit(questionable_domain ~ ., 
+                      data = train)
+  }else if(idx == 3){
+   model_fit = boost %>% fit(questionable_domain ~ ., 
+                      data = train)
+  }
+  
+  pred = predict(model_fit, test)
+  
+  Precision(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Recall(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Accuracy(pred$.pred_class, test$questionable_domain)
+  cm = confusionMatrix(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  
+  if(idx == 1){
+   dfr = cbind(dfr, data.frame(LR_V1 = cm$byClass))
+  }else if(idx == 2){
+   dfr = cbind(dfr, data.frame(NBC_V1 = cm$byClass))
+  }else if(idx == 3){
+   dfr = cbind(dfr, data.frame(XGB_V1 = cm$byClass))
+  }
+}
+})
+```
+
+
+OVER SAMPLING
+```{r}
+data.rose = ROSE(questionable_domain ~ ., data = train, seed = 1)$data
+
+```
+
+```{r}
+table(data.rose$questionable_domain)
+```
+
+
+Improvement 2 models - OVER SAMPLING technique
+```{r}
+suppressWarnings({
+for (idx in 1:4)
+{
+  
+  if(idx == 1){
+   model_fit = lr %>% fit(questionable_domain ~ ., 
+                      data = data.rose)
+  }else if(idx == 2){
+   model_fit = nbc %>% fit(questionable_domain ~ ., 
+                      data = data.rose)
+  }else if(idx == 3){
+   model_fit = knn %>% fit(questionable_domain ~ ., 
+                      data = data.rose)
+  }else if(idx == 4){
+   model_fit = boost %>% fit(questionable_domain ~ ., 
+                      data = data.rose)
+  }
+  
+  pred = predict(model_fit, test)
+  
+  Precision(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Recall(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Accuracy(pred$.pred_class, test$questionable_domain)
+  cm = confusionMatrix(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  
+  if(idx == 1){
+   dfr = cbind(dfr, data.frame(LR_V2 = cm$byClass))
+  }else if(idx == 2){
+   dfr = cbind(dfr, data.frame(NBC_V2 = cm$byClass))
+  }else if(idx == 3){
+   dfr = cbind(dfr, data.frame(KNN_V2 = cm$byClass))
+  }else if(idx == 4){
+   dfr = cbind(dfr, data.frame(XGB_V2 = cm$byClass))
+  }
+}
+})
+```
+
+
+UNDER SAMPLING
+```{r}
+data.under = ovun.sample(questionable_domain ~ ., data = train, method = "under", N = 3000, seed = 1)$data
+```
+
+
+```{r}
+table(data.under$questionable_domain)
+```
+
+
+Improvement 3 models - UNDER SAMPLING technique
+```{r}
+suppressWarnings({
+for (idx in 1:4)
+{
+  
+  if(idx == 1){
+   model_fit = lr %>% fit(questionable_domain ~ ., 
+                      data = data.under)
+  }else if(idx == 2){
+   model_fit = nbc %>% fit(questionable_domain ~ ., 
+                      data = data.under)
+  }else if(idx == 3){
+   model_fit = knn %>% fit(questionable_domain ~ ., 
+                      data = data.under)
+  }else if(idx == 4){
+   model_fit = boost %>% fit(questionable_domain ~ ., 
+                      data = data.under)
+  }
+  
+  pred = predict(model_fit, test)
+  
+  Precision(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Recall(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Accuracy(pred$.pred_class, test$questionable_domain)
+  cm = confusionMatrix(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  
+  if(idx == 1){
+   dfr = cbind(dfr, data.frame(LR_V3 = cm$byClass))
+  }else if(idx == 2){
+   dfr = cbind(dfr, data.frame(NBC_V3 = cm$byClass))
+  }else if(idx == 3){
+   dfr = cbind(dfr, data.frame(KNN_V3 = cm$byClass))
+  }else if(idx == 4){
+   dfr = cbind(dfr, data.frame(XGB_V3 = cm$byClass))
+  }
+}
+})
+```
+
+
+OVER and UNDER SAMPLING technique
+```{r}
+data_balanced_both = ovun.sample(questionable_domain ~ ., data = train, method = "both", p=0.5, N=3000, seed = 1)$data
+```
+
+
+```{r}
+table(data_balanced_both$questionable_domain)
+```
+
+
+Improvement 4 models - OVER and UNDER SAMPLING technique
+```{r}
+suppressWarnings({
+for (idx in 1:4)
+{
+  
+  if(idx == 1){
+   model_fit = lr %>% fit(questionable_domain ~ ., 
+                      data = data_balanced_both)
+  }else if(idx == 2){
+   model_fit = nbc %>% fit(questionable_domain ~ ., 
+                      data = data_balanced_both)
+  }else if(idx == 3){
+   model_fit = knn %>% fit(questionable_domain ~ ., 
+                      data = data_balanced_both)
+  }else if(idx == 4){
+   model_fit = boost %>% fit(questionable_domain ~ ., 
+                      data = data_balanced_both)
+  }
+  
+  pred = predict(model_fit, test)
+  
+  Precision(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Recall(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Accuracy(pred$.pred_class, test$questionable_domain)
+  cm = confusionMatrix(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  
+  if(idx == 1){
+   dfr = cbind(dfr, data.frame(LR_V4 = cm$byClass))
+  }else if(idx == 2){
+   dfr = cbind(dfr, data.frame(NBC_V4 = cm$byClass))
+  }else if(idx == 3){
+   dfr = cbind(dfr, data.frame(KNN_V4 = cm$byClass))
+  }else if(idx == 4){
+   dfr = cbind(dfr, data.frame(XGB_V4 = cm$byClass))
+  }
+}
+})
+```
+
+
+Improvement 5 models - Under and Over sampling with SMOTE
+```{r}
+dft$questionable_domain = as.factor(dft$questionable_domain)
+
+train = dft[ trainIndex,]
+test = dft[-trainIndex,]
+
+df_balanced = SMOTE(questionable_domain ~ ., train, perc.over = 170, perc.under = 270)
+```
+
+```{r}
+table(df_balanced$questionable_domain)
+```
+
+
+```{r}
+suppressWarnings({
+
+for (idx in 1:4)
+{
+  
+  if(idx == 1){
+   model_fit = lr %>% fit(questionable_domain ~ ., 
+                      data = df_balanced)
+  }else if(idx == 2){
+   model_fit = nbc %>% fit(questionable_domain ~ ., 
+                      data = df_balanced)
+  }else if(idx == 3){
+   model_fit = knn %>% fit(questionable_domain ~ ., 
+                      data = df_balanced)
+  }else if(idx == 4){
+   model_fit = boost %>% fit(questionable_domain ~ ., 
+                      data = df_balanced)
+  }
+  
+  pred = predict(model_fit, test)
+  
+  Precision(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Recall(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Accuracy(pred$.pred_class, test$questionable_domain)
+  cm = confusionMatrix(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  
+  if(idx == 1){
+   dfr = cbind(dfr, data.frame(LR_V5 = cm$byClass))
+  }else if(idx == 2){
+   dfr = cbind(dfr, data.frame(NBC_V5 = cm$byClass))
+  }else if(idx == 3){
+   dfr = cbind(dfr, data.frame(KNN_V5 = cm$byClass))
+  }else if(idx == 4){
+   dfr = cbind(dfr, data.frame(XGB_V5 = cm$byClass))
+  }
+}
+})
+```
+
+
+Improvement 6 models - Including only important features 
+```{r}
+#define predictor and response variables in training set
+train_x = data.matrix(df_balanced[, c('domainthegatewaypundit', 'domaindailymail', 'upper_word_count', 'domainamericanthinker', 'domainparler',
+'domainpoliticalflare', 'domaintheconservativetreehouse', 'user_followers_count', 'domainyahoo', 'domainwaynedupree',
+'domainnationalfile', 'number_count', 'domaininfowars', 'domaingellerreport', 'mention_count', 'domaindiscoverthenetworks',
+'domainindependent', 'user_friends_count', 'domainapnews', 'domainfrontpagemag', 'domainjudicialwatch','domaindjhjmedia', 
+'domainbeforeitsnews', 'bag_of_words', 'symbol_count', 'uppercase_count', 'domainsummit', 'domainsputniknews', 
+'domainwesternjournal', 'ntoken', 'domainzerohedge', 'domainpopulist', 'url_count', 'domainhannity', 
+'domainthepoliticalinsider', 'domaintechnocracy', 'user_favourites_count', 'domaindcdirtylaundry', 'domainbigleaguepolitics',
+'domainwnd', 'hashtag_count', 'nsentence', 'domaindavidharrisjr', 'senategop', 'domaintime', 'video', 'exc_count',
+'favorite_count', 'user_verified', 'mentions', 'white_house', 'domainamericasfreedomfighters', 'voter_fraud', 'has_emotions_aft',
+'hashtag', 'trump', 'sentiment_size', 'statist', 'exp_count', 'releas', 'domainslate', 'domainconservativedailypost', 'domainnymag', 
+'hunter_biden', 'breaking')])
+train_y = df_balanced[, c('questionable_domain')]
+
+#define predictor and response variables in testing set
+test_x = data.matrix(test[, c('domainthegatewaypundit', 'domaindailymail', 'upper_word_count', 'domainamericanthinker', 'domainparler',
+'domainpoliticalflare', 'domaintheconservativetreehouse', 'user_followers_count', 'domainyahoo', 'domainwaynedupree',
+'domainnationalfile', 'number_count', 'domaininfowars', 'domaingellerreport', 'mention_count', 'domaindiscoverthenetworks',
+'domainindependent', 'user_friends_count', 'domainapnews', 'domainfrontpagemag', 'domainjudicialwatch','domaindjhjmedia', 
+'domainbeforeitsnews', 'bag_of_words', 'symbol_count', 'uppercase_count', 'domainsummit', 'domainsputniknews', 
+'domainwesternjournal', 'ntoken', 'domainzerohedge', 'domainpopulist', 'url_count', 'domainhannity', 
+'domainthepoliticalinsider', 'domaintechnocracy', 'user_favourites_count', 'domaindcdirtylaundry', 'domainbigleaguepolitics',
+'domainwnd', 'hashtag_count', 'nsentence', 'domaindavidharrisjr', 'senategop', 'domaintime', 'video', 'exc_count',
+'favorite_count', 'user_verified', 'mentions', 'white_house', 'domainamericasfreedomfighters', 'voter_fraud', 'has_emotions_aft',
+'hashtag', 'trump', 'sentiment_size', 'statist', 'exp_count', 'releas', 'domainslate', 'domainconservativedailypost', 'domainnymag', 
+'hunter_biden', 'breaking')])
+test_y = test[, c('questionable_domain')]
+
+#define final training and testing sets
+xgb_train = xgb.DMatrix(data = train_x, label = train_y)
+xgb_test = xgb.DMatrix(data = test_x, label = test_y)
+
+#defining a watchlist
+watchlist = list(train=xgb_train, test=xgb_test)
+
+#fit XGBoost model and display training and testing data at each iteartion
+model = xgb.train(data = xgb_train, watchlist=watchlist, nrounds = 100)
+
+#define final model
+model_xgboost = xgboost(data = xgb_train, nrounds = 86, verbose = 0)
+summary(model_xgboost)
+
+importance_matrix = xgb.importance(colnames(xgb_train), model = model_xgboost)
+importance_matrix
+
+# Nice graph
+xgb.plot.importance(importance_matrix, top_n= 25)
+```
+
+Improvement 6 models - Including only important features
+```{r}
+suppressWarnings({
+train = dft[ trainIndex,]
+test = dft[-trainIndex,]
+  
+  
+for (idx in 1:4)
+{
+  
+  if(idx == 1){
+   model_fit = lr %>% fit(questionable_domain ~ domainthegatewaypundit + 
+                      domaindailymail + upper_word_count + 
+                      domainzerohedge + domainwesternjournal + domainamericanthinker +
+                      domainparler + domaintheconservativetreehouse +
+                      number_count + domainpoliticalflare + uppercase_count + 
+                      domainnationalfile + domaingellerreport + mention_count + 
+                      domainwnd + domainwaynedupree + user_followers_count +
+                      domaindjhjmedia + domainbeforeitsnews + domaininfowars, 
+                      data = df_balanced)
+  }else if(idx == 2){
+   model_fit = nbc %>% fit(questionable_domain ~ domainthegatewaypundit + 
+                      domaindailymail + upper_word_count + 
+                      domainzerohedge + domainwesternjournal + domainamericanthinker +
+                      domainparler + domaintheconservativetreehouse +
+                      number_count + domainpoliticalflare + uppercase_count + 
+                      domainnationalfile + domaingellerreport + mention_count + 
+                      domainwnd + domainwaynedupree + user_followers_count +
+                      domaindjhjmedia + domainbeforeitsnews + domaininfowars, 
+                      data = df_balanced)
+  }else if(idx == 3){
+   model_fit = knn %>% fit(questionable_domain ~ domainthegatewaypundit + 
+                      domaindailymail + upper_word_count + 
+                      domainzerohedge + domainwesternjournal + domainamericanthinker +
+                      domainparler + domaintheconservativetreehouse +
+                      number_count + domainpoliticalflare + uppercase_count + 
+                      domainnationalfile + domaingellerreport + mention_count + 
+                      domainwnd + domainwaynedupree + user_followers_count +
+                      domaindjhjmedia + domainbeforeitsnews + domaininfowars, 
+                      data = df_balanced)
+  }else if(idx == 4){
+   model_fit = boost %>% fit(questionable_domain ~ domainthegatewaypundit + 
+                      domaindailymail + upper_word_count + 
+                      domainzerohedge + domainwesternjournal + domainamericanthinker +
+                      domainparler + domaintheconservativetreehouse +
+                      number_count + domainpoliticalflare + uppercase_count + 
+                      domainnationalfile + domaingellerreport + mention_count + 
+                      domainwnd + domainwaynedupree + user_followers_count +
+                      domaindjhjmedia + domainbeforeitsnews + domaininfowars, 
+                      data = df_balanced)
+  }
+  
+  pred = predict(model_fit, test)
+  
+  Precision(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Recall(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  Accuracy(pred$.pred_class, test$questionable_domain)
+  cm = confusionMatrix(test$questionable_domain, pred$.pred_class, positive = "TRUE")
+  
+  if(idx == 1){
+   dfr = cbind(dfr, data.frame(LR_V6 = cm$byClass))
+  }else if(idx == 2){
+   dfr = cbind(dfr, data.frame(NBC_V6 = cm$byClass))
+  }else if(idx == 3){
+   dfr = cbind(dfr, data.frame(KNN_V6 = cm$byClass))
+  }else if(idx == 4){
+   dfr = cbind(dfr, data.frame(XGB_V6 = cm$byClass))
+  }
+}
+})
+```
+
+
+Showing the results for all the improvments and the base line
+```{r}
+t(dfr)
+```
+
+
+```{r}
+d = t(dfr[c("Recall", "Precision", "F1", "Balanced Accuracy"), ])
+names = row.names(d)
+data = cbind(d, data.frame(names = names))
+colnames(data) = c("Precision", "Recall", "F1", "Balanced Accuracy", "names")
+data = data %>% drop_na()
+```
+
+
+```{r}
+data = data[order(desc(data$`Balanced Accuracy`)),]
+data_pivot = data %>%
+pivot_longer(c("Recall", "Precision", "F1", "Balanced Accuracy"), 
+             names_to = "Metrics", values_to = "Results") 
+
+```
+
+
+```{r}
+data_pivot$Results = as.double(data_pivot$Results)
+data_pivot %>%
+  mutate(names = fct_reorder(names, Results)) %>%
+ggplot(aes(x = Results, y = names, colour = Metrics)) +
+geom_point(size=3, alpha=0.8) +
+geom_line() +
+labs(x = "Metrics values", y = "")
+```
